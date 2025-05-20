@@ -452,7 +452,7 @@ class LivePortraitWrapperAnimal(LivePortraitWrapper):
     Wrapper for Animal
     """
     def __init__(self, inference_cfg: InferenceConfig):
-        # super().__init__(inference_cfg)  # 调用父类的初始化方法
+        # super().__init__(inference_cfg) # This being commented out is important. We re-initialize everything.
 
         self.inference_cfg = inference_cfg
         self.device_id = inference_cfg.device_id
@@ -469,40 +469,70 @@ class LivePortraitWrapperAnimal(LivePortraitWrapper):
                     self.device = 'cuda:' + str(self.device_id)
 
         model_config = yaml.load(open(inference_cfg.models_config, 'r'), Loader=yaml.SafeLoader)
+        
+        # Determine the root directory for 'pretrained_weights'
+        # In Colab, os.getcwd() when this script is imported might be /content/JoyVASA/
+        # And inference_cfg.MODELS_PATH is typically 'pretrained_weights'
+        # So, the absolute path to pretrained_weights should be osp.join(os.getcwd(), inference_cfg.MODELS_PATH)
+        # However, the paths within inference_cfg (like checkpoint_F_animal) are already constructed
+        # using osp.join(os.getcwd(), self.MODELS_PATH, 'relative/path/to/model')
+        # So, inference_cfg.checkpoint_F_animal should already be the absolute path.
+        
+        project_root_plus_pretrained_weights_dir = osp.dirname(osp.dirname(osp.dirname(inference_cfg.checkpoint_F_animal)))
+        # This should resolve to something like /content/JoyVASA/pretrained_weights if checkpoint_F_animal is
+        # /content/JoyVASA/pretrained_weights/liveportrait_animals/base_models/appearance_feature_extractor.pth
+
         # init F
         self.appearance_feature_extractor = load_model(inference_cfg.checkpoint_F_animal, model_config, self.device, 'appearance_feature_extractor')
-        log(f'Load appearance_feature_extractor from {osp.realpath(inference_cfg.checkpoint_F_animal)} done.')
+        log(f'Load appearance_feature_extractor (Animal) from {osp.realpath(inference_cfg.checkpoint_F_animal)} done.')
         # init M
         self.motion_extractor = load_model(inference_cfg.checkpoint_M_animal, model_config, self.device, 'motion_extractor')
-        log(f'Load motion_extractor from {osp.realpath(inference_cfg.checkpoint_M_animal)} done.')
+        log(f'Load motion_extractor (Animal) from {osp.realpath(inference_cfg.checkpoint_M_animal)} done.')
         # init W
         self.warping_module = load_model(inference_cfg.checkpoint_W_animal, model_config, self.device, 'warping_module')
-        log(f'Load warping_module from {osp.realpath(inference_cfg.checkpoint_W_animal)} done.')
+        log(f'Load warping_module (Animal) from {osp.realpath(inference_cfg.checkpoint_W_animal)} done.')
         # init G
         self.spade_generator = load_model(inference_cfg.checkpoint_G_animal, model_config, self.device, 'spade_generator')
-        log(f'Load spade_generator from {osp.realpath(inference_cfg.checkpoint_G_animal)} done.')
-        # init S and R
-        if inference_cfg.checkpoint_S_animal is not None and osp.exists(inference_cfg.checkpoint_S_animal):
+        log(f'Load spade_generator (Animal) from {osp.realpath(inference_cfg.checkpoint_G_animal)} done.')
+        
+        # init S and R for ANIMAL - DIRECT PATH FIX
+        # Construct the correct path for the animal stitching module explicitly.
+        correct_checkpoint_S_animal = osp.join(project_root_plus_pretrained_weights_dir, 'liveportrait_animals/retargeting_models/stitching_retargeting_module.pth')
+        
+        # Debugging log:
+        log(f'[DEBUG] Animal Stitching - Config path for S_animal: {inference_cfg.checkpoint_S_animal}')
+        log(f'[DEBUG] Animal Stitching - Explicitly constructed path: {correct_checkpoint_S_animal}')
+        log(f'[DEBUG] Animal Stitching - Does explicit path exist? {osp.exists(correct_checkpoint_S_animal)}')
+
+
+        if osp.exists(correct_checkpoint_S_animal):
+            self.stitching_retargeting_module = load_model(correct_checkpoint_S_animal, model_config, self.device, 'stitching_retargeting_module')
+            log(f'Load stitching_retargeting_module (Animal) from {osp.realpath(correct_checkpoint_S_animal)} done.')
+        elif inference_cfg.checkpoint_S_animal is not None and osp.exists(inference_cfg.checkpoint_S_animal):
+            # Fallback to the original config path if our explicit construction fails
+            log(f'Warning: Explicitly constructed animal stitching path "{correct_checkpoint_S_animal}" not found or invalid. Falling back to config path: {inference_cfg.checkpoint_S_animal}')
             self.stitching_retargeting_module = load_model(inference_cfg.checkpoint_S_animal, model_config, self.device, 'stitching_retargeting_module')
-            log(f'Load stitching_retargeting_module from {osp.realpath(inference_cfg.checkpoint_S_animal)} done.')
+            log(f'Load stitching_retargeting_module (Animal) from {osp.realpath(inference_cfg.checkpoint_S_animal)} done. (Used fallback config path)')
         else:
             self.stitching_retargeting_module = None
+            log(f'Error: Stitching_retargeting_module (Animal) not found. Tried explicit path "{correct_checkpoint_S_animal}" and config path "{(inference_cfg.checkpoint_S_animal if inference_cfg.checkpoint_S_animal else "None")}".')
+
 
         # Optimize for inference
         if self.compile:
-            torch._dynamo.config.suppress_errors = True  # Suppress errors and fall back to eager execution
+            torch._dynamo.config.suppress_errors = True
             self.warping_module = torch.compile(self.warping_module, mode='max-autotune')
             self.spade_generator = torch.compile(self.spade_generator, mode='max-autotune')
 
         self.timer = Timer()
 
-        # Motion Genertor
+        # Motion Generator
         self.motion_generator, self.motion_generator_args = load_model(inference_cfg.checkpoint_MotionGenerator, model_config, self.device, 'motion_generator')
         log(f'Load motion_generator from {osp.realpath(inference_cfg.checkpoint_MotionGenerator)} done.')
         self.n_motions = self.motion_generator_args.n_motions
         self.n_prev_motions = self.motion_generator_args.n_prev_motions
         self.fps = self.motion_generator_args.fps
-        self.audio_unit = 16000. / self.fps  # num of samples per frame
+        self.audio_unit = 16000. / self.fps
         self.n_audio_samples = round(self.audio_unit * self.n_motions)
         self.pad_mode = self.motion_generator_args.pad_mode
         self.use_indicator = self.motion_generator_args.use_indicator
