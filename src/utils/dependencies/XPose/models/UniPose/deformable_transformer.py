@@ -580,7 +580,7 @@ class TransformerEncoder(nn.Module):
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
-                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device),)
+                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device), indexing='ij') # Added indexing='ij'
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
             ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
             ref = torch.stack((ref_x, ref_y), -1)
@@ -654,7 +654,8 @@ class TransformerEncoder(nn.Module):
                         output,
                         memory_text,
                         key_padding_mask,
-                        text_attention_mask
+                        text_attention_mask,
+                        use_reentrant=False # Added use_reentrant=False
                     )
                 else:
                     output, memory_text = self.fusion_layers[layer_id](v=output, l=memory_text,
@@ -678,7 +679,8 @@ class TransformerEncoder(nn.Module):
                     reference_points,
                     spatial_shapes,
                     level_start_index,
-                    key_padding_mask
+                    key_padding_mask,
+                    use_reentrant=False # Added use_reentrant=False
                 )
             else:
                 output = layer(src=output, pos=pos, reference_points=reference_points, spatial_shapes=spatial_shapes,
@@ -1048,8 +1050,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, tgt, ipdb_flag=False):
-
-        with torch.cuda.amp.autocast(enabled=False):
+        # MODIFIED LINE:
+        with torch.amp.autocast(device_type='cuda', enabled=False):
             tgt2 = self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
 
         tgt = tgt + self.dropout4(tgt2)
